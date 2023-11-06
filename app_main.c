@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
+#include "freertos/timers.h"
 
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
@@ -30,8 +31,92 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 
-static const char *TAG = "MQTT_EXAMPLE";
+#include "Isaac_Test.h"
+#include "ultrasonic.h"
+#include <esp_err.h>
 
+#include "esp_task_wdt.h"
+
+static const char *TAG = "MQTT_EXAMPLE";
+/*----------------------------------------*/
+#define MAX_DISTANCE_CM 500 // 5m max
+#define Sensor_Number 4
+
+/*-----------------------------------------*/
+#define TRIGGER_GPIO_0 4
+#define ECHO_GPIO_0 2
+
+#define TRIGGER_GPIO_1 17
+#define ECHO_GPIO_1 16
+
+#define TRIGGER_GPIO_2 5
+#define ECHO_GPIO_2 18 
+
+#define TRIGGER_GPIO_3 19
+#define ECHO_GPIO_3 21
+/*--------------------------------------------*/
+
+ultrasonic_sensor_t SENSORS[Sensor_Number] = {
+    {TRIGGER_GPIO_0,ECHO_GPIO_0},
+    {TRIGGER_GPIO_1,ECHO_GPIO_1},
+    {TRIGGER_GPIO_2,ECHO_GPIO_2},
+    {TRIGGER_GPIO_3,ECHO_GPIO_3}
+};
+
+float distances[Sensor_Number];
+
+TimerHandle_t xTimer;
+
+void ultrasonic_sensors_init(void);
+
+void TimerCallback(TimerHandle_t xTimer);
+
+void ultrasonic_sensors_init(void)
+{
+    for (uint8_t i = 0; i < Sensor_Number; i++)
+    {
+       if(ultrasonic_init(&SENSORS[i]) != ESP_OK)
+       {
+        ESP_LOGI(TAG, "NO SE inicializó el Sensor%d correctamente\n",i);
+       }
+       else
+       {
+        ESP_LOGI(TAG, "SI SE inicializó el Sensor%d correctamente\n",i);
+       }
+    }
+}
+
+void TimerCallback(TimerHandle_t xTimer)
+{
+    // Accion a realizar cuando el temporizador expire
+    for (uint8_t i = 0; i < Sensor_Number; i++)
+    {
+        esp_err_t res = ultrasonic_measure(&SENSORS[i], MAX_DISTANCE_CM, &distances[i]);
+        if (res != ESP_OK)
+        {
+            printf("Error %d: ", res);
+            switch (res)
+            {
+                case ESP_ERR_ULTRASONIC_PING:
+                    printf("Cannot ping (device is in invalid state) from sensor:%d\n",i);
+                    break;
+                case ESP_ERR_ULTRASONIC_PING_TIMEOUT:
+                    printf("Ping timeout (no device found) from sensor:%d\n",i);
+                    break;
+                case ESP_ERR_ULTRASONIC_ECHO_TIMEOUT:
+                    printf("Echo timeout (i.e. distance too big) from sensor:%d\n",i);
+                    break;
+                default:
+                    printf("%s from sensor:%d\n", esp_err_to_name(res),i);
+            }
+        }
+        else
+        {
+            printf("Distance: %0.04f cm from sensor:%d\n", distances[i]*100,i);
+        }
+    }
+    printf("----------------\n");
+}
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -59,17 +144,19 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-        msg_id = esp_mqtt_client_publish(client, "Mela/LED", "HELLO WORLD1", 0, 1, 0);
+        msg_id = esp_mqtt_client_publish(client, "IoT/prueba", "Mensaje 1", 0, 1, 0);
         ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 
-        msg_id = esp_mqtt_client_publish(client, "Mela/TEMP", "HELLO WORLD2", 0, 1, 0);
-        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+        msg_id = esp_mqtt_client_publish(client, "IoT/prueba", "Mensaje 2", 0, 1, 0);
+        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
-        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+        msg_id = esp_mqtt_client_publish(client, "IoT/prueba", "Mensaje 3", 0, 1, 0);
+        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 
-        msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
-        ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
+        msg_id = esp_mqtt_client_publish(client, "IoT/prueba", "Mensaje 4", 0, 1, 0);
+        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+
+        xTimerStart(xTimer, 0);
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
@@ -111,6 +198,8 @@ static void mqtt_app_start(void)
 {
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = CONFIG_BROKER_URL,
+        .credentials.username = "hint",
+        .credentials.authentication.password = "BAD123",
     };
 #if CONFIG_BROKER_URL_FROM_STDIN
     char line[128];
@@ -167,5 +256,21 @@ void app_main(void)
      */
     ESP_ERROR_CHECK(example_connect());
 
+    esp_task_wdt_deinit();
+
+    ultrasonic_sensors_init();
+
+    xTimer = xTimerCreate(
+    "Timer",                  // Nombre del temporizador
+    pdMS_TO_TICKS(1000),       // Período del temporizador en milisegundos
+    pdTRUE,                   // Modo automático de recarga del temporizador
+    0,                        // ID de temporizador (0 en este ejemplo)
+    TimerCallback             // Función de devolución de llamada
+    );
+
+    xTimerStart(xTimer, 0);
+    while(1)
+    {
+    };
     mqtt_app_start();
 }
